@@ -1,8 +1,8 @@
-import React from 'react';
+import React, { memo, useState } from 'react';
 import { CardProps, ButtonProps } from '../types';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Eye, EyeOff } from 'lucide-react';
 
-export const NeonCard: React.FC<CardProps & React.HTMLAttributes<HTMLDivElement>> = ({ children, className = '', glowColor = 'cyan', hoverEffect = false, ...props }) => {
+export const NeonCard: React.FC<CardProps & React.HTMLAttributes<HTMLDivElement>> = memo(({ children, className = '', glowColor = 'cyan', hoverEffect = false, ...props }) => {
   const borderClass = glowColor === 'orange' ? 'group-hover:border-signal-orange/50' : 'group-hover:border-neon-cyan/50';
   const shadowClass = glowColor === 'orange' ? 'hover:shadow-[0_0_30px_rgba(255,95,31,0.3)]' : 'hover:shadow-[0_0_30px_rgba(0,243,255,0.3)]';
 
@@ -14,9 +14,9 @@ export const NeonCard: React.FC<CardProps & React.HTMLAttributes<HTMLDivElement>
       <div className="relative z-10 h-full">{children}</div>
     </div>
   );
-};
+});
 
-export const NeonButton: React.FC<ButtonProps & { isLoading?: boolean }> = ({ children, variant = 'primary', size = 'md', glow = false, className = '', isLoading = false, disabled, ...props }) => {
+export const NeonButton: React.FC<ButtonProps & { isLoading?: boolean }> = memo(({ children, variant = 'primary', size = 'md', glow = false, className = '', isLoading = false, disabled, ...props }) => {
   const baseStyles = "relative rounded-lg font-display font-bold tracking-wide transition-all duration-300 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed";
 
   const sizes = {
@@ -39,21 +39,37 @@ export const NeonButton: React.FC<ButtonProps & { isLoading?: boolean }> = ({ ch
       {children}
     </button>
   );
-};
+});
 
-export const Input: React.FC<React.InputHTMLAttributes<HTMLInputElement> & { label?: string }> = ({ label, className = '', ...props }) => {
+export const Input: React.FC<React.InputHTMLAttributes<HTMLInputElement> & { label?: string }> = memo(({ label, className = '', type, ...props }) => {
+  const [showPassword, setShowPassword] = useState(false);
+  const isPassword = type === 'password';
+
   return (
     <div className="w-full">
       {label && <label className="block text-gray-400 text-sm mb-2 font-medium">{label}</label>}
-      <input
-        {...props}
-        className={`w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-neon-cyan focus:ring-1 focus:ring-neon-cyan/50 transition-all ${className}`}
-      />
+      <div className="relative group/input">
+        <input
+          {...props}
+          type={isPassword ? (showPassword ? 'text' : 'password') : type}
+          className={`w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-neon-cyan focus:ring-1 focus:ring-neon-cyan/50 transition-all ${isPassword ? 'pr-12' : ''} ${className}`}
+        />
+        {isPassword && (
+          <button
+            type="button"
+            onClick={() => setShowPassword(!showPassword)}
+            className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-md text-gray-400 hover:text-neon-cyan hover:bg-white/5 transition-all outline-none"
+            tabIndex={-1}
+          >
+            {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+          </button>
+        )}
+      </div>
     </div>
   );
-};
+});
 
-export const NeonTag: React.FC<{ label: string; color: 'cyan' | 'purple' | 'blue' | 'red' | 'green' }> = ({ label, color }) => {
+export const NeonTag: React.FC<{ label: string; color: 'cyan' | 'purple' | 'blue' | 'red' | 'green' }> = memo(({ label, color }) => {
   const colorStyles: Record<string, string> = {
     cyan: 'bg-neon-cyan/20 text-neon-cyan border-neon-cyan/30',
     orange: 'bg-signal-orange/20 text-signal-orange border-signal-orange/30',
@@ -63,4 +79,4 @@ export const NeonTag: React.FC<{ label: string; color: 'cyan' | 'purple' | 'blue
     purple: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
   };
   return <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider border ${colorStyles[color] || colorStyles.cyan}`}>{label}</span>;
-};
+});

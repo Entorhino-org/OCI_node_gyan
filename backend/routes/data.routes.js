@@ -9,7 +9,7 @@ const sanitizeData = (table, data) => {
             'id', 'name', 'logoUrl', 'inviteCode', 'adminEmail', 'password',
             'mobileNumber', 'motto', 'address', 'city', 'state', 'pincode',
             'subscriptionStatus', 'trialEndsAt', 'studentCount', 'maxStudents',
-            'plan', 'details', 'createdAt', 'updatedAt'
+            'plan', 'details', 'createdAt', 'updatedAt', 'google_id', 'auth_provider', 'oauth_linked_at'
         ],
         students: [
             'id', 'username', 'mobileNumber', 'name', 'email', 'password',
@@ -17,7 +17,12 @@ const sanitizeData = (table, data) => {
             'grade', 'stream', 'attendance', 'avgScore', 'status',
             'parentEmail', 'parentName', 'parentMobile', 'weakerSubjects',
             'weaknessHistory', 'performanceData', 'profileImage', 'xp',
-            'level', 'createdAt'
+            'level', 'createdAt', 'google_id', 'auth_provider', 'oauth_linked_at'
+        ],
+        teachers: [
+            'id', 'schoolId', 'name', 'email', 'mobileNumber', 'subject',
+            'password', 'joinedAt', 'assignedClasses', 'profileImage',
+            'createdAt', 'google_id', 'auth_provider', 'oauth_linked_at'
         ],
         classrooms: [
             'id', 'name', 'schoolId', 'teacherId', 'section', 'stream',
@@ -55,7 +60,7 @@ export const createDataRoutes = (supabase) => {
     // --- Public Routes (No auth required) ---
 
     // School listing for join flow (must be accessible before login)
-    router.get('/schools', async (req, res) => {
+    router.get('/schools', async (req, res, next) => {
         try {
             const { data: schools, error } = await supabase.from('schools').select('*');
             if (error) throw error;
@@ -66,14 +71,66 @@ export const createDataRoutes = (supabase) => {
                     ({ id, name, inviteCode, type, region, tier })));
             }
 
-            // Full school list requires auth - check manually
-            const authHeader = req.headers.authorization;
-            if (!authHeader || !authHeader.startsWith('Bearer ')) {
-                return res.status(401).json({ error: 'Access denied. No token provided.' });
-            }
-            res.json(schools);
+            // If not join flow, pass to verifyToken below
+            next();
         } catch (err) {
-            res.status(500).json({ error: err.message });
+            res.status(500).json({ error: `SchoolsFetch: ${err.message}` });
+        }
+    });
+
+    // Student registration
+    router.post('/students', async (req, res) => {
+        try {
+            const studentData = sanitizeData('students', req.body);
+            if (studentData.password) {
+                studentData.password = await bcrypt.hash(studentData.password, 10);
+            }
+            const { data, error } = await supabase.from('students').insert([studentData]).select();
+
+            // [ROBUSTNESS] Fallback if DB schema is missing Google columns
+            if (error && (error.message.includes('auth_provider') || error.message.includes('google_id'))) {
+                console.warn("[Backend] Students table missing Google columns. Retrying without Google fields...");
+                const fallbackData = { ...studentData };
+                delete fallbackData.auth_provider;
+                delete fallbackData.google_id;
+                delete fallbackData.oauth_linked_at;
+                const { data: retryData, error: retryError } = await supabase.from('students').insert([fallbackData]).select();
+                if (retryError) throw retryError;
+                return res.json(retryData[0]);
+            }
+
+            if (error) throw error;
+            res.json(data[0]);
+        } catch (err) {
+            res.status(500).json({ error: `StudentCreate: ${err.message}` });
+        }
+    });
+
+    // Teacher registration
+    router.post('/teachers', async (req, res) => {
+        try {
+            const teacherData = sanitizeData('teachers', req.body);
+            if (teacherData.password) {
+                teacherData.password = await bcrypt.hash(teacherData.password, 10);
+            }
+            const { error } = await supabase.from('teachers').insert([teacherData]);
+
+            // [ROBUSTNESS] Fallback if DB schema is missing Google columns
+            if (error && (error.message.includes('auth_provider') || error.message.includes('google_id'))) {
+                console.warn("[Backend] Teachers table missing Google columns. Retrying without Google fields...");
+                const fallbackData = { ...teacherData };
+                delete fallbackData.auth_provider;
+                delete fallbackData.google_id;
+                delete fallbackData.oauth_linked_at;
+                const { error: retryError } = await supabase.from('teachers').insert([fallbackData]);
+                if (retryError) throw retryError;
+                return res.json(fallbackData);
+            }
+
+            if (error) throw error;
+            res.json(teacherData);
+        } catch (err) {
+            res.status(500).json({ error: `TeacherCreate: ${err.message}` });
         }
     });
 
@@ -93,8 +150,20 @@ export const createDataRoutes = (supabase) => {
         }
     });
 
+
+
     // --- Protected Routes (Auth required) ---
     router.use(verifyToken);
+
+    router.get('/schools', async (req, res) => {
+        try {
+            const { data: schools, error } = await supabase.from('schools').select('*');
+            if (error) throw error;
+            res.json(schools);
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
 
     // --- Teachers ---
     router.get('/teachers', async (req, res) => {
@@ -107,19 +176,7 @@ export const createDataRoutes = (supabase) => {
         }
     });
 
-    router.post('/teachers', async (req, res) => {
-        try {
-            const teacherData = { ...req.body };
-            if (teacherData.password) {
-                teacherData.password = await bcrypt.hash(teacherData.password, 10);
-            }
-            const { error } = await supabase.from('teachers').insert([teacherData]);
-            if (error) throw error;
-            res.json(teacherData);
-        } catch (err) {
-            res.status(500).json({ error: err.message });
-        }
-    });
+
 
     router.put('/teachers/:id', async (req, res) => {
         try {
@@ -142,19 +199,7 @@ export const createDataRoutes = (supabase) => {
         }
     });
 
-    router.post('/students', async (req, res) => {
-        try {
-            const studentData = { ...req.body };
-            if (studentData.password) {
-                studentData.password = await bcrypt.hash(studentData.password, 10);
-            }
-            const { data, error } = await supabase.from('students').insert([studentData]).select();
-            if (error) throw error;
-            res.json(data[0]);
-        } catch (err) {
-            res.status(500).json({ error: err.message });
-        }
-    });
+
 
     router.put('/students/:id', async (req, res) => {
         try {

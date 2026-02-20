@@ -2,8 +2,9 @@ import React, { useState, useRef } from 'react';
 import { UserRole, Teacher } from '../types';
 import { NeonCard, NeonButton, Input } from './UIComponents';
 import { ForgotPassword } from './ForgotPassword';
-import { GraduationCap, Users, ShieldCheck, Baby, ArrowLeft, LogIn, UserPlus, ChevronRight, User, Mail, BookOpen, Rocket, Building2, Upload, ScanLine, Phone, MapPin, Camera, Home, CheckCircle } from 'lucide-react';
-import { GoogleLogin } from '@react-oauth/google';
+import { GraduationCap, Users, ShieldCheck, Baby, ArrowLeft, LogIn, UserPlus, ChevronRight, User, Mail, BookOpen, Rocket, Building2, Upload, ScanLine, Phone, MapPin, Camera, Home, CheckCircle, AlertCircle } from 'lucide-react';
+import { GoogleAuthBlock } from './GoogleAuthBlock';
+import { CredentialResponse } from '@react-oauth/google';
 
 interface RoleSelectionProps {
   onSelectRole: (role: UserRole) => void;
@@ -16,29 +17,60 @@ interface RoleSelectionProps {
   showLoginButton?: boolean;
 }
 
-export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectRole, onLogin, onSignupDetails, onRegisterSchool, onBackToHome, faculty = [], initialView = 'HOME', showLoginButton = true }) => {
+export const RoleSelection: React.FC<RoleSelectionProps> = React.memo(({ onSelectRole, onLogin, onSignupDetails, onRegisterSchool, onBackToHome, faculty = [], initialView = 'HOME', showLoginButton = true }) => {
   const [view, setView] = useState<'HOME' | 'LOGIN' | 'SIGNUP_DETAILS' | 'REGISTER_SCHOOL' | 'FORGOT_PASSWORD'>(initialView as any);
   const [signupData, setSignupData] = useState({ name: '', email: '', mobileNumber: '', rollNumber: '', username: '', password: '', className: '', stream: '', inviteCode: '' });
   const [schoolData, setSchoolData] = useState({ schoolName: '', adminName: '', adminEmail: '', password: '', mobileNumber: '', motto: '', address: '', city: '', state: '', pincode: '', logoUrl: '' });
   const [loginRole, setLoginRole] = useState<UserRole | null>(null);
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>('');
   const logoInputRef = useRef<HTMLInputElement>(null);
 
   // [NEW] Handle Google Login
-  const handleGoogleLogin = async (credentialResponse: any) => {
+  const handleGoogleLogin = async (credentialResponse: CredentialResponse) => {
     if (!loginRole) {
-      alert('Please select a role first');
+      setAuthError('Please select a role first');
       return;
     }
+
+    if (isGoogleLoading) return; // Prevent duplicate submissions
+
+    setIsGoogleLoading(true);
+    setAuthError(null);
+
     try {
-      // credentialResponse.credential contains the Google ID token
-      onLogin(loginRole, "Nebula Academy", { 
-        idToken: credentialResponse.credential, 
-        authProvider: 'google' 
-      });
+      if (view === 'SIGNUP_DETAILS') {
+        // Pre-fill signup form instead of logging in
+        const { jwtDecode } = await import('jwt-decode');
+        const decoded: any = jwtDecode(credentialResponse.credential!);
+
+        // Generate a random secure-ish password for them
+        const generatedPassword = Math.random().toString(36).slice(-8) + Math.random().toString(36).slice(-8);
+
+        setSignupData(prev => ({
+          ...prev,
+          name: decoded.name || prev.name,
+          email: decoded.email || prev.email,
+          google_id: decoded.sub, // Store Google ID for linking during signup
+          password: generatedPassword, // Auto-fill password
+          mobileNumber: decoded.phone_number || prev.mobileNumber, // Might be available in some cases
+        }));
+
+        // Success feedback
+        console.log('[Google Auth] Form pre-filled from Google');
+      } else {
+        // Standard Login flow
+        await onLogin(loginRole, "", {
+          idToken: credentialResponse.credential,
+          authProvider: 'google'
+        });
+      }
     } catch (err: any) {
       console.error('Google login error:', err);
-      alert('Google login failed: ' + err.message);
+      setAuthError(err.message || 'Google authentication failed. Please try again.');
+    } finally {
+      setIsGoogleLoading(false);
     }
   };
 
@@ -87,66 +119,60 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectRole, onLo
             <>
               <Input placeholder="Username, Mobile, or User ID" value={signupData.username} onChange={e => setSignupData({ ...signupData, username: e.target.value })} />
               <Input type="password" placeholder="Password" value={signupData.password} onChange={e => setSignupData({ ...signupData, password: e.target.value })} />
-              <NeonButton onClick={() => onLogin(loginRole, "Nebula Academy", { username: signupData.username, password: signupData.password })} className="w-full" glow>Login</NeonButton>
-              
+              <NeonButton onClick={() => onLogin(loginRole, "", { username: signupData.username, password: signupData.password })} className="w-full" glow>Login</NeonButton>
+
               {/* Google Login */}
-              <div className="flex flex-col gap-2">
-                <p className="text-xs text-gray-400 text-center">Or sign in with</p>
-                <div className="flex justify-center">
-                  <GoogleLogin
-                    onSuccess={handleGoogleLogin}
-                    onError={() => alert('Google login failed')}
-                  />
-                </div>
-              </div>
+              <GoogleAuthBlock
+                onSuccess={handleGoogleLogin}
+                onError={setAuthError}
+                isLoading={isGoogleLoading}
+                error={authError}
+                role={loginRole}
+              />
             </>
           ) : loginRole === 'TEACHER' ? (
             <>
               <Input placeholder="Email or Mobile Number" value={signupData.email} onChange={e => setSignupData({ ...signupData, email: e.target.value })} />
               <Input type="password" placeholder="Password" value={signupData.password} onChange={e => setSignupData({ ...signupData, password: e.target.value })} />
               <NeonButton
-                onClick={() => onLogin(loginRole, "Nebula Academy", { email: signupData.email, password: signupData.password })}
+                onClick={() => onLogin(loginRole, "", { email: signupData.email, password: signupData.password })}
                 className="w-full"
                 glow
                 disabled={!signupData.email || !signupData.password}
               >
                 Login as Teacher
               </NeonButton>
-              
+
               {/* Google Login */}
-              <div className="flex flex-col gap-2">
-                <p className="text-xs text-gray-400 text-center">Or sign in with</p>
-                <div className="flex justify-center">
-                  <GoogleLogin
-                    onSuccess={handleGoogleLogin}
-                    onError={() => alert('Google login failed')}
-                  />
-                </div>
-              </div>
+              <GoogleAuthBlock
+                onSuccess={handleGoogleLogin}
+                onError={setAuthError}
+                isLoading={isGoogleLoading}
+                error={authError}
+                role={loginRole}
+              />
             </>
           ) : loginRole === 'PARENT' ? (
             <>
               <p className="text-xs text-gray-400 mb-2">Use your child's credentials to login</p>
               <Input placeholder="Student Username or Mobile" value={signupData.username} onChange={e => setSignupData({ ...signupData, username: e.target.value })} />
               <Input type="password" placeholder="Student Password" value={signupData.password} onChange={e => setSignupData({ ...signupData, password: e.target.value })} />
-              <NeonButton onClick={() => onLogin('PARENT', "Nebula Academy", { username: signupData.username, password: signupData.password, asParent: true })} className="w-full" glow>Login as Parent</NeonButton>
+              <NeonButton onClick={() => onLogin('PARENT', "", { username: signupData.username, password: signupData.password, asParent: true })} className="w-full" glow>Login as Parent</NeonButton>
             </>
           ) : (
             <>
               <Input placeholder="Admin Email" value={signupData.email} onChange={e => setSignupData({ ...signupData, email: e.target.value })} />
               <Input type="password" placeholder="Password" value={signupData.password} onChange={e => setSignupData({ ...signupData, password: e.target.value })} />
-              <NeonButton onClick={() => onLogin(loginRole || 'ADMIN', "Nebula Academy", { email: signupData.email, password: signupData.password })} className="w-full" glow>Authenticate</NeonButton>
-              
+              <NeonButton onClick={() => onLogin(loginRole || 'ADMIN', "", { email: signupData.email, password: signupData.password })} className="w-full" glow>Authenticate</NeonButton>
+
               {/* Google Login */}
-              <div className="flex flex-col gap-2">
-                <p className="text-xs text-gray-400 text-center">Or sign in with</p>
-                <div className="flex justify-center">
-                  <GoogleLogin
-                    onSuccess={handleGoogleLogin}
-                    onError={() => alert('Google login failed')}
-                  />
-                </div>
-              </div>
+              <GoogleAuthBlock
+                onSuccess={handleGoogleLogin}
+                onError={setAuthError}
+                isLoading={isGoogleLoading}
+                error={authError}
+                role={loginRole}
+              />
             </>
           )}
 
@@ -302,6 +328,34 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectRole, onLo
             <Rocket className="w-4 h-4 mr-2" />
             Create School & Generate Invite Code
           </NeonButton>
+
+          {/* Divider */}
+          <div className="flex items-center gap-3 my-2">
+            <div className="flex-1 h-px bg-white/10" />
+            <span className="text-xs text-gray-500 font-medium tracking-widest uppercase">or quick setup with</span>
+            <div className="flex-1 h-px bg-white/10" />
+          </div>
+
+          {/* Google Pre-fill for school registration */}
+          <GoogleAuthBlock
+            onSuccess={async (credentialResponse) => {
+              try {
+                const { jwtDecode } = await import('jwt-decode');
+                const decoded: any = jwtDecode(credentialResponse.credential!);
+                setSchoolData(prev => ({
+                  ...prev,
+                  adminEmail: decoded.email || prev.adminEmail,
+                  adminName: decoded.name || prev.adminName,
+                }));
+              } catch (e) {
+                console.error('Google prefill error:', e);
+              }
+            }}
+            onError={setAuthError}
+            isLoading={isGoogleLoading}
+            error={authError}
+            role={'ADMIN' as any}
+          />
         </NeonCard>
       </div>
     );
@@ -358,6 +412,16 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectRole, onLo
               <Input placeholder="Mobile Number" value={signupData.mobileNumber} onChange={e => setSignupData({ ...signupData, mobileNumber: e.target.value })} />
               <Input placeholder="Subject Specialization" value={signupData.stream} onChange={e => setSignupData({ ...signupData, stream: e.target.value })} />
               <Input type="password" placeholder="Create Password" value={signupData.password} onChange={e => setSignupData({ ...signupData, password: e.target.value })} />
+
+              <div className="py-2">
+                <GoogleAuthBlock
+                  onSuccess={handleGoogleLogin}
+                  onError={setAuthError}
+                  isLoading={isGoogleLoading}
+                  error={authError}
+                  role={loginRole}
+                />
+              </div>
             </>
           ) : (
             <>
@@ -368,6 +432,16 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectRole, onLo
                 <option value="">Select Grade...</option>
                 {[...Array(12)].map((_, i) => <option key={i} value={`Grade ${i + 1}`}>Grade {i + 1}</option>)}
               </select>
+
+              <div className="py-2">
+                <GoogleAuthBlock
+                  onSuccess={handleGoogleLogin}
+                  onError={setAuthError}
+                  isLoading={isGoogleLoading}
+                  error={authError}
+                  role={loginRole}
+                />
+              </div>
             </>
           )}
 
@@ -412,4 +486,4 @@ export const RoleSelection: React.FC<RoleSelectionProps> = ({ onSelectRole, onLo
   }
 
   return null;
-};
+});

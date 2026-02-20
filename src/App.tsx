@@ -4,7 +4,7 @@ import { GoogleOAuthProvider } from '@react-oauth/google';
 import { api } from './services/api';
 import { Layout } from './components/Layout';
 import { RoleSelection } from './components/RoleSelection';
-import { AppState, UserRole, SchoolProfile, Student, Teacher, Classroom, Announcement } from './types';
+import { AppState, UserRole, SchoolProfile, Student, Teacher, Parent, Classroom, Announcement } from './types';
 import { Home } from './components/Home';
 import { NeonCard, NeonButton, Input } from './components/UIComponents';
 import { SmoothScroll } from './components/SmoothScroll';
@@ -13,13 +13,18 @@ import { useAppData } from './hooks/useAppData';
 import { useAuth } from './hooks/useAuth';
 
 // Lazy load components for performance
-const Dashboard = lazy(() => import('./components/Dashboard').then(m => ({ default: m.Dashboard })));
+
+const TeacherDashboard = lazy(() => import('./components/TeacherDashboard').then(m => ({ default: m.TeacherDashboard })));
+const ParentDashboard = lazy(() => import('./components/ParentDashboard').then(m => ({ default: m.ParentDashboard })));
+const StudentDashboard = lazy(() => import('./components/StudentDashboard').then(m => ({ default: m.StudentDashboard })));
+const AdminDashboard = lazy(() => import('./components/AdminDashboard').then(m => ({ default: m.AdminDashboard })));
 const SchoolJoin = lazy(() => import('./components/SchoolJoin').then(m => ({ default: m.SchoolJoin })));
 const ClassSelection = lazy(() => import('./components/ClassSelection').then(m => ({ default: m.ClassSelection })));
 const DeveloperConsole = lazy(() => import('./components/DeveloperConsole').then(m => ({ default: m.DeveloperConsole })));
 const AboutUs = lazy(() => import('./components/AboutUs').then(m => ({ default: m.AboutUs })));
 const Team = lazy(() => import('./components/Team').then(m => ({ default: m.Team })));
 const Contact = lazy(() => import('./components/Contact').then(m => ({ default: m.Contact })));
+
 
 const LoadingFallback = () => (
   <div className="min-h-screen flex items-center justify-center bg-black text-white p-4">
@@ -29,6 +34,47 @@ const LoadingFallback = () => (
     </div>
   </div>
 );
+
+const DevLogin: React.FC<{ onLogin: (success: boolean) => void }> = ({ onLogin }) => {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+
+  const handleLogin = async () => {
+    try {
+      await api.devLogin({ email, password });
+      onLogin(true);
+    } catch (e) {
+      setError('Invalid Credentials');
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {error && <div className="p-3 bg-red-500/20 border border-red-500 rounded text-red-200 text-sm">{error}</div>}
+      <div>
+        <label className="block text-gray-400 text-sm mb-1">Email</label>
+        <Input
+          value={email}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEmail(e.target.value)}
+          placeholder="admin@example.com"
+        />
+      </div>
+      <div>
+        <label className="block text-gray-400 text-sm mb-1">Password</label>
+        <Input
+          type="password"
+          value={password}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
+          placeholder="••••••••"
+        />
+      </div>
+      <NeonButton onClick={handleLogin} className="w-full mt-4" glow>
+        Access Console
+      </NeonButton>
+    </div>
+  );
+};
 
 const AppContent: React.FC = () => {
   const navigate = useNavigate();
@@ -75,7 +121,7 @@ const AppContent: React.FC = () => {
   };
 
   // Derive dashboard tab from URL path
-  const getDashboardTabFromUrl = (): string => {
+  const dashboardTab = React.useMemo((): string => {
     const path = location.pathname;
     if (path.startsWith('/dashboard/')) {
       const tabSlug = path.split('/dashboard/')[1]?.split('/')[0]?.toUpperCase();
@@ -110,17 +156,15 @@ const AppContent: React.FC = () => {
     // Default tab based on role
     if (appState.userRole === 'STUDENT') return 'LEARN';
     return 'HOME';
-  };
-
-  const dashboardTab = getDashboardTabFromUrl();
+  }, [location.pathname, appState.userRole]);
 
   // Navigate to dashboard tab
-  const navigateToDashboardTab = (tab: string) => {
+  const navigateToDashboardTab = React.useCallback((tab: string) => {
     const tabSlug = tab.toLowerCase();
     navigate(`/dashboard/${tabSlug}`);
-  };
+  }, [navigate]);
 
-  const handleRegisterSchool = async (data: any) => {
+  const handleRegisterSchool = React.useCallback(async (data: any) => {
     const uniqueCode = `${data.schoolName.substring(0, 3).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
     const newSchool: SchoolProfile = {
       id: `SCH-${Date.now()}`,
@@ -151,9 +195,9 @@ const AppContent: React.FC = () => {
       console.error(e);
       alert(`Failed to register school: ${e.message || "Unknown error"}`);
     }
-  };
+  }, [navigate, setAppState, setSchools]);
 
-  const handleSyncUserToSchool = async (schoolId: string) => {
+  const handleSyncUserToSchool = React.useCallback(async (schoolId: string) => {
     // [FIX] Guard against missing signup data (e.g. on refresh)
     if (!tempSignupData) {
       alert("Session expired. Please start the signup process again.");
@@ -183,7 +227,9 @@ const AppContent: React.FC = () => {
         avgScore: 0,
         status: 'Active',
         weakerSubjects: [],
-        weaknessHistory: []
+        weaknessHistory: [],
+        google_id: tempSignupData.google_id,
+        auth_provider: tempSignupData.google_id ? 'google' : 'email'
       };
 
       try {
@@ -241,7 +287,9 @@ const AppContent: React.FC = () => {
         subject: tempSignupData.stream,
         password: tempSignupData.password,
         joinedAt: new Date().toISOString(),
-        assignedClasses: []
+        assignedClasses: [],
+        google_id: tempSignupData.google_id,
+        auth_provider: tempSignupData.google_id ? 'google' : 'email'
       };
       try {
         await api.createTeacher(newTeacher);
@@ -257,9 +305,9 @@ const AppContent: React.FC = () => {
         }
       }
     }
-  };
+  }, [tempSignupData, schools, appState.userRole, navigate, setAppState, setGlobalStudents, setSchools]);
 
-  const handleCreateClassroom = async (data: any) => {
+  const handleCreateClassroom = React.useCallback(async (data: any) => {
     const teacher = appState.currentUser as Teacher;
     // For Admin, use a generic ID if teacher.id is missing (though handleLogin will now set it)
     const creatorId = teacher?.id || 'ADMIN';
@@ -310,10 +358,10 @@ const AppContent: React.FC = () => {
       console.error(e);
       alert("Failed to create classroom");
     }
-  };
+  }, [appState.currentUser, appState.schoolId, classrooms, setClassrooms]);
 
   // Archive class (soft delete)
-  const handleArchiveClass = async (classId: string) => {
+  const handleArchiveClass = React.useCallback(async (classId: string) => {
     try {
       await api.updateClassroom(classId, { status: 'ARCHIVED', archivedAt: new Date().toISOString() });
       setClassrooms(prev => prev.map(c =>
@@ -323,14 +371,14 @@ const AppContent: React.FC = () => {
     } catch (e) {
       alert("Failed to archive class");
     }
-  };
+  }, [setClassrooms]);
 
   // Restore archived class
-  const handleRestoreClass = async (classId: string) => {
+  const handleRestoreClass = React.useCallback(async (classId: string) => {
     try {
       if (appState.userRole !== 'ADMIN') return;
 
-      const updatedClass = await api.updateClassroom(classId, { status: 'ACTIVE', archivedAt: undefined });
+      await api.updateClassroom(classId, { status: 'ACTIVE', archivedAt: undefined });
 
       setClassrooms(prev => prev.map(c => c.id === classId ? { ...c, status: 'ACTIVE' as const, archivedAt: undefined } : c));
       alert('Section restored successfully!');
@@ -338,14 +386,12 @@ const AppContent: React.FC = () => {
       console.error('Failed to restore class:', error);
       alert('Failed to restore section');
     }
-  };
+  }, [appState.userRole, setClassrooms]);
 
-  const handleRemoveStudentFromClass = async (studentId: string, classId: string) => {
+  const handleRemoveStudentFromClass = React.useCallback(async (studentId: string, classId: string) => {
     try {
       if (appState.userRole !== 'TEACHER' && appState.userRole !== 'ADMIN') return;
 
-      // In a real backend, this would likely be a separate API call like api.removeStudentFromClass
-      // For now, we update the student to remove classId and sectionId
       const student = globalStudents.find(s => s.id === studentId);
       if (!student) return;
 
@@ -371,10 +417,10 @@ const AppContent: React.FC = () => {
       console.error('Failed to remove student:', error);
       alert('Failed to remove student');
     }
-  };
+  }, [appState.userRole, appState.currentUser?.id, globalStudents, setAppState, setClassrooms, setGlobalStudents]);
 
   // Permanently delete class (for purge after 7 days or manual)
-  const handlePermanentDeleteClass = async (classId: string) => {
+  const handlePermanentDeleteClass = React.useCallback(async (classId: string) => {
     try {
       await api.deleteClassroom(classId);
       setClassrooms(prev => prev.filter(c => c.id !== classId));
@@ -387,7 +433,7 @@ const AppContent: React.FC = () => {
     } catch (e) {
       alert("Failed to delete class");
     }
-  };
+  }, [globalStudents, setClassrooms, setGlobalStudents]);
 
   // Auto-purge expired archived classes (older than 7 days)
   useEffect(() => {
@@ -400,8 +446,10 @@ const AppContent: React.FC = () => {
         await handlePermanentDeleteClass(expired.id);
       }
     };
-    purgeExpiredArchives();
-  }, [classrooms]);
+    if (classrooms.length > 0) {
+      purgeExpiredArchives();
+    }
+  }, [classrooms, handlePermanentDeleteClass]);
 
   const handleRenameClass = async (classId: string, newSectionName: string) => {
     try {
@@ -412,7 +460,7 @@ const AppContent: React.FC = () => {
     }
   };
 
-  const handleToggleClassLock = async (classId: string, locked: boolean) => {
+  const handleToggleClassLock = React.useCallback(async (classId: string, locked: boolean) => {
     const newStatus = locked ? 'LOCKED' : 'ACTIVE';
     try {
       await api.updateClassroom(classId, { status: newStatus });
@@ -421,9 +469,9 @@ const AppContent: React.FC = () => {
       console.error("Failed to toggle class lock:", e);
       alert("Failed to update class status");
     }
-  };
+  }, [setClassrooms]);
 
-  const handleLockAllClasses = async () => {
+  const handleLockAllClasses = React.useCallback(async () => {
     try {
       await Promise.all(classrooms.map(c => api.updateClassroom(c.id, { status: 'LOCKED' })));
       setClassrooms(prev => prev.map(c => ({ ...c, status: 'LOCKED' })));
@@ -431,9 +479,9 @@ const AppContent: React.FC = () => {
       console.error("Failed to lock all classes:", e);
       alert("Failed to lock all classes");
     }
-  };
+  }, [classrooms, setClassrooms]);
 
-  const handleUpdateTeacher = async (teacherId: string, assignedClassIds: string[]) => {
+  const handleUpdateTeacher = React.useCallback(async (teacherId: string, assignedClassIds: string[]) => {
     try {
       await api.updateTeacher(teacherId, { assignedClasses: assignedClassIds });
       // Update local state
@@ -446,7 +494,7 @@ const AppContent: React.FC = () => {
       alert("Failed to update teacher assignments");
       throw e;
     }
-  };
+  }, [setSchools]);
 
 
   const handleJoinClass = async (studentId: string, inviteCode: string) => {
@@ -541,7 +589,7 @@ const AppContent: React.FC = () => {
 
 
 
-  const handleLogin = async (role: UserRole, schoolName: string, credentials?: any) => {
+  const handleLogin = React.useCallback(async (role: UserRole, schoolName: string, credentials?: any) => {
     if (!credentials) return;
 
     try {
@@ -587,16 +635,16 @@ const AppContent: React.FC = () => {
       console.error("Login Failed:", e);
       alert(e.message || "Invalid Credentials");
     }
-  };
+  }, [navigate, schools, setAppState]);
 
   const getDisplayName = (student: Student) => {
     return globalStudents.filter(s => s.name === student.name && s.classId === student.classId).length > 1 ? `${student.name} (ID#${student.id.slice(-4)})` : student.name;
   };
 
-  if (isLoading) return <div style={{ color: 'white', textAlign: 'center', marginTop: '20%' }}>Loading Gyan System...</div>;
-  if (error) return <div style={{ color: 'red', textAlign: 'center', marginTop: '20%' }}><h1>Error</h1><p>{error}</p></div>;
 
-  const handleUpdateStudent = async (updatedStudent: Student) => {
+
+  // Persist to backend
+  const handleUpdateStudent = React.useCallback(async (updatedStudent: Student) => {
     // Update local state
     setGlobalStudents(prev => prev.map(s => s.id === updatedStudent.id ? updatedStudent : s));
 
@@ -605,13 +653,12 @@ const AppContent: React.FC = () => {
       setAppState(prev => ({ ...prev, currentUser: updatedStudent }));
     }
 
-    // Persist to backend
     try {
       await api.updateStudent(updatedStudent);
     } catch (e) {
       console.error("Failed to update student:", e);
     }
-  };
+  }, [appState.currentUser, setAppState, setGlobalStudents]);
 
   const handleJoinClasses = async (classIds: string[]) => {
     if (!appState.currentUser || appState.userRole !== 'STUDENT') return;
@@ -677,6 +724,57 @@ const AppContent: React.FC = () => {
     return 'HOME';
   };
 
+
+  // These callbacks must be defined as hooks BEFORE the early returns
+  const handleLayoutNavigate = React.useCallback((tab: string) => {
+    if (tab === 'ABOUT') {
+      navigate('/about');
+    } else if (tab === 'TEAM') {
+      navigate('/team');
+    } else if (tab === 'CONTACT') {
+      navigate('/contact');
+    } else if (tab === 'HOME' && !appState.userRole) {
+      navigate('/');
+    } else {
+      navigateToDashboardTab(tab);
+    }
+  }, [navigate, appState.userRole, navigateToDashboardTab]);
+
+  const handleLayoutUpdateUser = React.useCallback((updated: Student | Teacher | Parent) => {
+    if (appState.userRole === 'STUDENT') {
+      handleUpdateStudent(updated as Student);
+    } else if (appState.userRole === 'TEACHER') {
+      const updatedTeacher = updated as Teacher;
+      setSchools(prev => prev.map(s => ({
+        ...s,
+        faculty: (s.faculty || []).map(f => f.id === updatedTeacher.id ? { ...f, ...updatedTeacher } : f)
+      })));
+      setAppState(prev => ({ ...prev, currentUser: updatedTeacher }));
+    } else if (appState.userRole === 'PARENT') {
+      setAppState(prev => ({ ...prev, currentUser: updated as Parent }));
+    }
+  }, [appState.userRole, handleUpdateStudent, setSchools, setAppState]);
+
+  if (isLoading) return (
+    <div style={{ backgroundColor: '#020617', minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'white' }}>
+      <div style={{ width: '40px', height: '40px', border: '4px solid #00f3ff', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></div>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <p style={{ marginTop: '20px', fontFamily: 'Outfit, sans-serif', letterSpacing: '0.1em' }}>INITIALIZING GYAN SYSTEM...</p>
+    </div>
+  );
+
+  if (error) return (
+    <div style={{ backgroundColor: '#020617', minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#ff5f1f', padding: '20px', textAlign: 'center' }}>
+      <h1 style={{ fontSize: '2rem', marginBottom: '10px' }}>SYSTEM ERROR</h1>
+      <div style={{ padding: '20px', backgroundColor: 'rgba(255,95,31,0.1)', border: '1px solid #ff5f1f', borderRadius: '8px', maxWidth: '500px' }}>
+        <p>{error}</p>
+      </div>
+      <button onClick={() => window.location.reload()} style={{ marginTop: '20px', padding: '10px 20px', backgroundColor: '#ff5f1f', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
+        Retry Connection
+      </button>
+    </div>
+  );
+
   return (
     <SmoothScroll>
       <Layout
@@ -690,33 +788,8 @@ const AppContent: React.FC = () => {
         }}
         /* Pass Tab Control to Layout */
         activeTab={dashboardTab}
-        onNavigate={(tab) => {
-          if (tab === 'ABOUT') {
-            navigate('/about');
-          } else if (tab === 'TEAM') {
-            navigate('/team');
-          } else if (tab === 'CONTACT') {
-            navigate('/contact');
-          } else if (tab === 'HOME' && !appState.userRole) {
-            navigate('/');
-          } else {
-            navigateToDashboardTab(tab);
-          }
-        }}
-
-        onUpdateUser={(updated) => {
-          if (appState.userRole === 'STUDENT') {
-            handleUpdateStudent(updated as Student);
-          } else if (appState.userRole === 'TEACHER') {
-            // Update local state for teacher
-            setSchools(prev => prev.map(s => ({
-              ...s,
-              faculty: (s.faculty || []).map(f => f.id === updated.id ? { ...f, ...updated } : f)
-            })));
-            setAppState(prev => ({ ...prev, currentUser: updated }));
-            // Note: Backend updateTeacher not assumed to exist in full form, but local update is critical for UX
-          }
-        }}
+        onNavigate={handleLayoutNavigate}
+        onUpdateUser={handleLayoutUpdateUser}
         hideHeader={false}
       >
         <>
@@ -748,16 +821,31 @@ const AppContent: React.FC = () => {
               <Route path="/contact" element={<Contact onBack={() => navigate('/')} />} />
 
               <Route path="/auth" element={
-                <RoleSelection
-                  onSelectRole={(r) => { setAppState(prev => ({ ...prev, userRole: r })); navigate('/join-school'); }}
-                  onLogin={handleLogin}
-                  onSignupDetails={setTempSignupData}
-                  onRegisterSchool={handleRegisterSchool}
-                  onBackToHome={() => navigate('/')}
-                  faculty={schools[0]?.faculty}
-                  initialView={authMode === 'login' ? 'LOGIN' : 'HOME'}
-                  showLoginButton={authMode !== 'signup'}
-                />
+                import.meta.env.VITE_GOOGLE_CLIENT_ID ? (
+                  <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID}>
+                    <RoleSelection
+                      onSelectRole={(r) => { setAppState(prev => ({ ...prev, userRole: r })); navigate('/join-school'); }}
+                      onLogin={handleLogin}
+                      onSignupDetails={setTempSignupData}
+                      onRegisterSchool={handleRegisterSchool}
+                      onBackToHome={() => navigate('/')}
+                      faculty={schools[0]?.faculty}
+                      initialView={authMode === 'login' ? 'LOGIN' : 'HOME'}
+                      showLoginButton={authMode !== 'signup'}
+                    />
+                  </GoogleOAuthProvider>
+                ) : (
+                  <RoleSelection
+                    onSelectRole={(r) => { setAppState(prev => ({ ...prev, userRole: r })); navigate('/join-school'); }}
+                    onLogin={handleLogin}
+                    onSignupDetails={setTempSignupData}
+                    onRegisterSchool={handleRegisterSchool}
+                    onBackToHome={() => navigate('/')}
+                    faculty={schools[0]?.faculty}
+                    initialView={authMode === 'login' ? 'LOGIN' : 'HOME'}
+                    showLoginButton={authMode !== 'signup'}
+                  />
+                )
               } />
 
               <Route path="/join-school" element={
@@ -843,33 +931,68 @@ const AppContent: React.FC = () => {
               } />
 
               <Route path="/dashboard/*" element={
-                <Dashboard
-                  userRole={appState.userRole!}
-                  schoolName={appState.schoolName!}
-                  schoolProfile={schools.find(s => s.id === appState.schoolId)}
-                  students={globalStudents.filter(s => s.schoolId === appState.schoolId)}
-                  classrooms={classrooms.filter(c => c.schoolId === appState.schoolId)}
-                  announcements={announcements.filter(a => a.schoolId === appState.schoolId)}
-                  setStudents={setGlobalStudents}
-                  onLogout={() => { setAppState(prev => ({ ...prev, userRole: null, currentUser: undefined })); navigate('/'); }}
-                  currentUser={appState.currentUser}
-                  onCreateClass={handleCreateClassroom}
-                  onJoinClass={handleJoinClass}
-                  onPostAnnouncement={handlePostAnnouncement}
-                  getDisplayName={getDisplayName}
-                  onRenameClass={handleRenameClass}
-                  onUpdateTeacher={handleUpdateTeacher}
-                  onUpdateStudent={handleUpdateStudent}
-                  onToggleClassLock={handleToggleClassLock}
-                  onLockAllClasses={handleLockAllClasses}
-                  onArchiveClass={handleArchiveClass}
-                  onRestoreClass={handleRestoreClass}
-                  onKickStudent={handleRemoveStudentFromClass}
-                  onJoinClassClick={() => navigate('/class-selection')}
-                  /* Pass Control Pass-Through */
-                  activeTab={dashboardTab}
-                  onTabChange={navigateToDashboardTab}
-                />
+                appState.userRole === 'STUDENT' ? (
+                  <StudentDashboard
+                    student={appState.currentUser as Student}
+                    classrooms={classrooms.filter(c => c.schoolId === appState.schoolId)}
+                    announcements={announcements.filter(a => a.schoolId === appState.schoolId)}
+                    schoolName={appState.schoolName!}
+                    schoolProfile={schools.find(s => s.id === appState.schoolId)}
+                    onUpdateStudent={handleUpdateStudent}
+                    students={globalStudents.filter(s => s.schoolId === appState.schoolId)}
+                    onJoinClassClick={() => navigate('/class-selection')}
+                    activeTab={dashboardTab}
+                    onTabChange={navigateToDashboardTab}
+                  />
+                ) : appState.userRole === 'TEACHER' ? (
+                  <TeacherDashboard
+                    schoolName={appState.schoolName!}
+                    schoolProfile={schools.find(s => s.id === appState.schoolId)}
+                    students={globalStudents.filter(s => s.schoolId === appState.schoolId)}
+                    classrooms={classrooms.filter(c => c.schoolId === appState.schoolId)}
+                    announcements={announcements.filter(a => a.schoolId === appState.schoolId)}
+                    setStudents={setGlobalStudents}
+                    onLogout={() => { setAppState(prev => ({ ...prev, userRole: null, currentUser: undefined })); navigate('/'); }}
+                    userRole={appState.userRole}
+                    currentUser={appState.currentUser}
+                    onCreateClass={handleCreateClassroom}
+                    onPostAnnouncement={handlePostAnnouncement}
+                    getDisplayName={getDisplayName}
+                    onRenameClass={handleRenameClass}
+                    onUpdateTeacher={handleUpdateTeacher}
+                    onKickStudent={handleRemoveStudentFromClass}
+                    activeTab={dashboardTab}
+                    onTabChange={navigateToDashboardTab}
+                  />
+                ) : appState.userRole === 'ADMIN' ? (
+                  <AdminDashboard
+                    schoolName={appState.schoolName!}
+                    schoolProfile={schools.find(s => s.id === appState.schoolId)}
+                    students={globalStudents.filter(s => s.schoolId === appState.schoolId)}
+                    classrooms={classrooms.filter(c => c.schoolId === appState.schoolId)}
+                    announcements={announcements.filter(a => a.schoolId === appState.schoolId)}
+                    onLogout={() => { setAppState(prev => ({ ...prev, userRole: null, currentUser: undefined })); navigate('/'); }}
+                    currentUser={appState.currentUser}
+                    onUpdateTeacher={handleUpdateTeacher}
+                    onPostAnnouncement={handlePostAnnouncement}
+                    onCreateClass={handleCreateClassroom}
+                    onToggleClassLock={handleToggleClassLock}
+                    onLockAllClasses={handleLockAllClasses}
+                    onArchiveClass={handleArchiveClass}
+                    onRestoreClass={handleRestoreClass}
+                    onUpdateStudent={handleUpdateStudent}
+                    activeTab={dashboardTab}
+                    onTabChange={navigateToDashboardTab}
+                  />
+                ) : appState.userRole === 'PARENT' ? (
+                  <ParentDashboard
+                    schoolName={appState.schoolName!}
+                    onLogout={() => { setAppState(prev => ({ ...prev, userRole: null, currentUser: undefined })); navigate('/'); }}
+                    currentUser={appState.currentUser}
+                    students={globalStudents.filter(s => s.schoolId === appState.schoolId)}
+                    classrooms={classrooms.filter(c => c.schoolId === appState.schoolId)}
+                  />
+                ) : null
               } />
             </Routes>
           </Suspense>
@@ -879,61 +1002,14 @@ const AppContent: React.FC = () => {
   );
 };
 
-const DevLogin: React.FC<{ onLogin: (success: boolean) => void }> = ({ onLogin }) => {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
 
-  const handleLogin = async () => {
-    try {
-      await api.devLogin({ email, password });
-      onLogin(true);
-    } catch (e) {
-      setError('Invalid Credentials');
-    }
-  };
-
-  return (
-    <div className="space-y-4">
-      {error && <div className="p-3 bg-red-500/20 border border-red-500 rounded text-red-200 text-sm">{error}</div>}
-      <div>
-        <label className="block text-gray-400 text-sm mb-1">Email</label>
-        <Input
-          value={email}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEmail(e.target.value)}
-          placeholder="admin@example.com"
-        />
-      </div>
-      <div>
-        <label className="block text-gray-400 text-sm mb-1">Password</label>
-        <Input
-          type="password"
-          value={password}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
-          placeholder="••••••••"
-        />
-      </div>
-      <NeonButton onClick={handleLogin} className="w-full mt-4" glow>
-        Access Console
-      </NeonButton>
-    </div>
-  );
-};
 
 // App wrapper that provides BrowserRouter context
 const App: React.FC = () => {
-  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
-  
-  if (!googleClientId) {
-    console.warn('[Google Auth] VITE_GOOGLE_CLIENT_ID not found in environment variables');
-  }
-
   return (
-    <GoogleOAuthProvider clientId={googleClientId}>
-      <BrowserRouter>
-        <AppContent />
-      </BrowserRouter>
-    </GoogleOAuthProvider>
+    <BrowserRouter>
+      <AppContent />
+    </BrowserRouter>
   );
 };
 

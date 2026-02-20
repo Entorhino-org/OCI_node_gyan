@@ -1,236 +1,260 @@
-import jwt from 'jsonwebtoken';
-import bcrypt from 'bcryptjs';
+import { OAuth2Client } from 'google-auth-library';
+import logger from '../utils/logger.js';
 
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 if (!GOOGLE_CLIENT_ID) {
-    console.warn('[Google Auth] GOOGLE_CLIENT_ID not set. Google authentication will not work.');
+    logger.warn('[Google Auth] GOOGLE_CLIENT_ID not set. Google authentication will not work.');
 }
 
 /**
- * Verify Google ID Token
- * Decodes and validates the JWT signature against Google's public keys
- * @param {string} idToken - Google ID token from frontend
- * @returns {Promise<Object>} - Decoded token payload with user info
+ * Verify Google ID Token with Timeout handling
  */
 export const verifyGoogleToken = async (idToken) => {
+    logger.info('[Google Auth] Verification attempt started');
+
+    const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Google verification timed out')), 5000)
+    );
+
     try {
-        // Decode without verification first to get kid (key ID)
-        const decoded = jwt.decode(idToken, { complete: true });
-        if (!decoded) throw new Error('Invalid token format');
+        const ticket = await Promise.race([
+            client.verifyIdToken({
+                idToken,
+                audience: GOOGLE_CLIENT_ID,
+            }),
+            timeoutPromise
+        ]);
 
-        const { header, payload } = decoded;
-        const kid = header.kid;
+        const payload = ticket.getPayload();
 
-        // Fetch Google's public keys
-        const keysRes = await fetch('https://www.googleapis.com/oauth2/v1/certs');
-        if (!keysRes.ok) throw new Error('Failed to fetch Google keys');
-        
-        const keys = await keysRes.json();
-        const publicKey = keys[kid];
-        if (!publicKey) throw new Error('Key not found');
+        if (!payload.email || !payload.email_verified) {
+            logger.warn('[Google Auth] Verification failed: Email not verified or missing');
+            throw new Error('Valid verified Google email is required');
+        }
 
-        // Verify the token signature using the public key
-        const verified = jwt.verify(idToken, publicKey, {
-            algorithms: ['RS256'],
-            audience: GOOGLE_CLIENT_ID
-        });
+        logger.info(`[Google Auth] Token verified for: ${payload.email}`);
 
         return {
-            google_id: verified.sub,
-            email: verified.email,
-            name: verified.name,
-            picture: verified.picture,
-            email_verified: verified.email_verified
+            google_id: payload.sub,
+            email: payload.email,
+            name: payload.name,
+            picture: payload.picture
         };
     } catch (err) {
-        console.error('[Google Auth] Token verification failed:', err.message);
-        throw new Error('Invalid Google token: ' + err.message);
+        logger.error(`[Google Auth] Verification failed: ${err.message}`);
+        throw new Error(err.message.includes('timed out') ? 'Auth service busy, try again' : 'Invalid Google account');
     }
 };
 
 /**
- * Handle Google OAuth Login/Signup
- * Finds or creates user based on Google ID
- * @param {Object} supabase - Supabase client
- * @param {string} idToken - Google ID token
- * @param {string} role - User role (STUDENT, TEACHER, ADMIN, DEVELOPER)
- * @returns {Promise<Object>} - User data or error
+ * Optimized Handle Google OAuth Login/Signup
  */
 export const handleGoogleAuth = async (supabase, idToken, role) => {
     try {
-        // 1. Verify Google token
+        const ALLOWED_GOOGLE_ROLES = ['STUDENT', 'TEACHER', 'ADMIN'];
+        if (!ALLOWED_GOOGLE_ROLES.includes(role)) {
+            logger.warn(`[Google Auth] Unauthorized role attempt: ${role}`);
+            throw new Error('Google signup not allowed for this role');
+        }
+
+        // 1. Verify Google token (Fast-fail with timeout)
         const googleUser = await verifyGoogleToken(idToken);
-        console.log(`[Google Auth] Verified user: ${googleUser.email}`);
+        logger.info(`[Google Auth] Processing user: ${googleUser.email}`);
 
-        // 2. Pick the right table based on role
-        let table = 'students'; // default
-        let identifierField = 'email';
-        
-        if (role === 'TEACHER') {
-            table = 'teachers';
-            identifierField = 'email';
-        } else if (role === 'ADMIN') {
-            table = 'schools';
-            identifierField = 'adminEmail';
-        } else if (role === 'DEVELOPER') {
-            table = 'system_users';
-            identifierField = 'email';
-        }
-
-        // 3. Look up existing user by google_id first
-        let { data: existingUser, error: lookupError } = await supabase
-            .from(table)
-            .select('*')
-            .eq('google_id', googleUser.google_id)
-            .single();
-
-        if (existingUser && !lookupError) {
-            console.log(`[Google Auth] Existing user found by google_id: ${existingUser.id}`);
-            return {
-                success: true,
-                user: existingUser,
-                isNewUser: false,
-                authProvider: 'google'
-            };
-        }
-
-        // 4. Check if email already exists (prevent duplicate accounts)
+        // 2. Identify target table and fields
+        let table = role === 'TEACHER' ? 'teachers' : role === 'ADMIN' ? 'schools' : role === 'DEVELOPER' ? 'system_users' : 'students';
         const emailField = role === 'ADMIN' ? 'adminEmail' : 'email';
-        let { data: emailExists, error: emailError } = await supabase
+
+        // Full select (with Google columns) - used when DB schema is up to date
+        const selectFields = role === 'ADMIN'
+            ? 'id, name, adminEmail, google_id, auth_provider'
+            : role === 'DEVELOPER'
+                ? 'id, name, email, google_id, role, auth_provider'
+                : 'id, name, email, google_id, schoolId, auth_provider';
+
+        // Safe select (without Google columns) - used as fallback when DB schema is missing columns
+        const safeSelectFields = role === 'ADMIN'
+            ? 'id, name, adminEmail'
+            : role === 'DEVELOPER'
+                ? 'id, name, email, role'
+                : 'id, name, email, schoolId';
+
+        // 3. Combined Performance Lookup (Single DB Trip)
+        // Check for both google_id (primary) and email (secondary) in one query
+        let users = [];
+        let schemaHasGoogleColumns = true; // Assume true, flip if lookup fails
+
+        // First attempt: full lookup with google_id + email
+        const { data: fullData, error: findError } = await supabase
             .from(table)
-            .select('id, ' + emailField)
-            .eq(emailField, googleUser.email)
-            .single();
+            .select(`${selectFields}, ${emailField}`)
+            .or(`google_id.eq.${googleUser.google_id},${emailField}.eq.${googleUser.email}`);
 
-        if (emailExists && !emailError) {
-            console.log(`[Google Auth] Email already exists, linking Google account`);
-            // User exists with email, link Google account
-            const { data: linked, error: linkError } = await supabase
-                .from(table)
-                .update({
-                    google_id: googleUser.google_id,
-                    auth_provider: 'google',
-                    oauth_linked_at: new Date().toISOString()
-                })
-                .eq('id', emailExists.id)
-                .select()
-                .single();
+        if (findError) {
+            const errMsg = (findError.message || '') + (findError.details || '') + (findError.hint || '');
+            const isSchemaMissing = errMsg.toLowerCase().includes('column') || errMsg.toLowerCase().includes('does not exist');
 
-            if (linkError) {
-                console.error('[Google Auth] Failed to link Google account:', linkError);
-                throw new Error('Failed to link Google account');
+            if (isSchemaMissing) {
+                // [ROBUSTNESS] DB doesn't have Google columns yet — fall back to email-only lookup
+                logger.warn(`[Google Auth] DB schema missing Google columns in '${table}'. Falling back to email-only lookup.`);
+                schemaHasGoogleColumns = false;
+
+                const { data: fallbackData, error: fallbackError } = await supabase
+                    .from(table)
+                    .select(`${safeSelectFields}, ${emailField}`)
+                    .eq(emailField, googleUser.email);
+
+                if (fallbackError) {
+                    logger.error(`[Google Auth] Fallback lookup also failed: ${fallbackError.message}`);
+                    throw new Error('Database lookup failed');
+                }
+                users = fallbackData || [];
+            } else {
+                logger.error(`[Google Auth] Lookup Error: ${findError.message}`);
+                throw new Error('Database lookup failed');
             }
-            return {
-                success: true,
-                user: linked,
-                isNewUser: false,
-                authProvider: 'google',
-                accountLinked: true
-            };
+        } else {
+            users = fullData || [];
         }
 
-        // 5. Create new user (Google signup)
-        console.log(`[Google Auth] Creating new user: ${googleUser.email}`);
-        
+        // 4. Resolve found user logic
+        if (users && users.length > 0) {
+            // Priority: Match by google_id
+            const byId = users.find(u => u.google_id === googleUser.google_id);
+            if (byId) {
+                logger.info(`[Google Auth] Login successful for existing user: ${byId.id}`);
+                return { success: true, user: byId, isNewUser: false };
+            }
+
+            // Secondary: Match by email (Account Linking required)
+            const byEmail = users.find(u => u[emailField] === googleUser.email);
+            if (byEmail) {
+                if (byEmail.google_id && byEmail.google_id !== googleUser.google_id) {
+                    logger.warn(`[Google Auth] Account link conflict for ${googleUser.email}: already linked to diff ID`);
+                    throw new Error('Email is already linked to another Google profile');
+                }
+
+                logger.info(`[Google Auth] Linking account: ${byEmail.id}`);
+                if (schemaHasGoogleColumns) {
+                    try {
+                        const { data: linked, error: linkError } = await supabase
+                            .from(table)
+                            .update({
+                                google_id: googleUser.google_id,
+                                auth_provider: 'google',
+                                oauth_linked_at: new Date().toISOString()
+                            })
+                            .eq('id', byEmail.id)
+                            .is('google_id', null) // Safety guard
+                            .select(selectFields)
+                            .single();
+
+                        if (linkError) throw linkError;
+                        return { success: true, user: linked, isNewUser: false, accountLinked: true };
+                    } catch (linkErr) {
+                        logger.warn(`[Google Auth] Link failed (likely schema missing): ${linkErr.message}`);
+                        return { success: true, user: byEmail, isNewUser: false, accountLinked: false };
+                    }
+                } else {
+                    // Schema doesn't have Google columns — just return the found user
+                    logger.info(`[Google Auth] Schema missing Google cols, returning existing user without linking.`);
+                    return { success: true, user: byEmail, isNewUser: false, accountLinked: false };
+                }
+            }
+        }
+
+        // 5. Creation Flow (User not found)
+        logger.info(`[Google Auth] Creating new ${role} profile for ${googleUser.email}`);
+
         let newUserData = {
-            id: `USR-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            id: `USR-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
             [emailField]: googleUser.email,
             google_id: googleUser.google_id,
             auth_provider: 'google',
             oauth_linked_at: new Date().toISOString(),
-            password: null // No password for Google users
+            password: null
         };
 
-        // Add role-specific fields
+        // Role mapping for new user creation
         if (role === 'STUDENT') {
-            newUserData = {
-                ...newUserData,
-                name: googleUser.name,
-                username: googleUser.email.split('@')[0], // Auto-generate username
-                status: 'Active',
-                attendance: 100,
-                avgScore: 0,
-                weakerSubjects: [],
-                weaknessHistory: []
-            };
+            const baseName = googleUser.email.split('@')[0];
+            newUserData = { ...newUserData, name: googleUser.name, username: `${baseName}_${Math.floor(100 + Math.random() * 899)}`, status: 'Active', attendance: 100, avgScore: 0 };
         } else if (role === 'TEACHER') {
-            newUserData = {
-                ...newUserData,
-                name: googleUser.name,
-                joinedAt: new Date().toISOString(),
-                assignedClasses: []
-            };
+            newUserData = { ...newUserData, name: googleUser.name, joinedAt: new Date().toISOString(), assignedClasses: [] };
         } else if (role === 'ADMIN') {
+            // Admin -> creates a school record with basic info from Google
+            const inviteCode = `SCH-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
             newUserData = {
                 ...newUserData,
-                adminEmail: googleUser.email,
-                name: googleUser.name,
-                password: null
+                name: googleUser.name ? `${googleUser.name}'s School` : 'My School',
+                inviteCode,
+                studentCount: 0,
+                maxStudents: 200,
+                subscriptionStatus: 'trial'
             };
-        } else if (role === 'DEVELOPER') {
-            newUserData = {
-                ...newUserData,
-                name: googleUser.name,
-                role: 'DEVELOPER',
-                password: null
-            };
+        } else {
+            newUserData = { ...newUserData, name: googleUser.name };
         }
+
+        if (!schemaHasGoogleColumns) {
+            // DB schema is missing Google columns — insert without them
+            logger.warn(`[Google Auth] Creating new user without Google columns (DB schema not updated).`);
+            delete newUserData.google_id;
+            delete newUserData.auth_provider;
+            delete newUserData.oauth_linked_at;
+        }
+
+        const insertSelect = schemaHasGoogleColumns ? selectFields : safeSelectFields;
 
         const { data: newUser, error: createError } = await supabase
             .from(table)
             .insert([newUserData])
-            .select()
+            .select(insertSelect)
             .single();
 
         if (createError) {
-            console.error('[Google Auth] Failed to create user:', createError);
-            throw new Error(createError.message || 'Failed to create user');
+            if (createError.code === '23505') { // Unique constraint conflict race
+                const lookupField = schemaHasGoogleColumns ? 'google_id' : emailField;
+                const lookupValue = schemaHasGoogleColumns ? googleUser.google_id : googleUser.email;
+                const { data: winner } = await supabase.from(table).select(insertSelect).eq(lookupField, lookupValue).single();
+                if (winner) return { success: true, user: winner, isNewUser: false };
+            }
+            logger.error(`[Google Auth] Create Error: ${createError.message}`);
+            throw new Error(createError.message);
         }
 
-        console.log(`[Google Auth] New user created: ${newUser.id}`);
-        return {
-            success: true,
-            user: newUser,
-            isNewUser: true,
-            authProvider: 'google'
-        };
+        logger.info(`[Google Auth] Successfully created new user: ${newUser.id}`);
+        return { success: true, user: newUser, isNewUser: true };
 
     } catch (err) {
-        console.error('[Google Auth] Error:', err.message);
+        logger.error(`[Google Auth] Global Error: ${err.message}`);
         return {
             success: false,
-            error: err.message || 'Google authentication failed'
+            error: err.message || 'Authentication failed. Please try again.'
         };
     }
 };
 
 /**
- * Optionally handle account linking
- * For existing password users who want to add Google
+ * Link Google Account manually (Optional component)
  */
 export const linkGoogleAccount = async (supabase, userId, idToken, role) => {
     try {
         const googleUser = await verifyGoogleToken(idToken);
-
-        let table = role === 'TEACHER' ? 'teachers' : role === 'ADMIN' ? 'schools' : 'students';
+        const table = role === 'TEACHER' ? 'teachers' : role === 'ADMIN' ? 'schools' : 'students';
 
         const { data: updated, error } = await supabase
             .from(table)
-            .update({
-                google_id: googleUser.google_id,
-                auth_provider: 'google',
-                oauth_linked_at: new Date().toISOString()
-            })
+            .update({ google_id: googleUser.google_id, auth_provider: 'google', oauth_linked_at: new Date().toISOString() })
             .eq('id', userId)
             .select()
             .single();
 
         if (error) throw error;
-
         return { success: true, user: updated };
     } catch (err) {
-        console.error('[Google Link] Error:', err.message);
         return { success: false, error: err.message };
     }
 };

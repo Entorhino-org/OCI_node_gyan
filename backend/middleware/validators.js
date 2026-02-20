@@ -21,6 +21,16 @@ export const loginRules = [
     body('role').isIn(['STUDENT', 'TEACHER', 'ADMIN']).withMessage('Invalid role'),
 ];
 
+export const googleLoginRules = [
+    body('idToken')
+        .isString()
+        .isLength({ min: 100, max: 3000 })
+        .withMessage('Invalid Google token'),
+    body('role')
+        .isIn(['STUDENT', 'TEACHER', 'ADMIN'])
+        .withMessage('Invalid role for Google login')
+];
+
 export const devLoginRules = [
     body('email').isEmail().normalizeEmail().withMessage('Valid email required'),
     body('password').notEmpty().withMessage('Password is required'),
