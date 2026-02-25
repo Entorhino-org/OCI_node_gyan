@@ -8,8 +8,6 @@ pnpm-debug.log*
 lerna-debug.log*
 
 # Environment and Secrets
-.env
-.env.*
 !.env.example
 *.pem
 *.key
@@ -64,3 +62,4 @@ ARCHITECTURE.md
 # AI Agent Data
 .agent/
 .agents/
+config.bat

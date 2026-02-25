@@ -108,6 +108,8 @@ export const Layout: React.FC<LayoutProps> = ({ children, logoUrl, userRole, cur
         { label: 'Login / Join', icon: LayoutDashboard, action: () => navigate('ROLE_SELECTION') },
       ];
     }
+    // If userRole is set but no role-specific items, return common items only (no Login/Join)
+    // This prevents showing Login/Join when user is authenticated
 
     let roleItems: any[] = [];
     if (userRole === 'STUDENT') {
@@ -304,6 +306,9 @@ export const Layout: React.FC<LayoutProps> = ({ children, logoUrl, userRole, cur
                       <div className="text-[8px] text-neon-cyan uppercase tracking-[0.2em] mt-1 font-black opacity-80 group-hover:opacity-100">{userRole}</div>
                     </div>
                   </div>
+                ) : userRole ? (
+                  /* User has a role but currentUser is still loading — hide login button */
+                  <div className="w-8 h-8 rounded-full bg-white/10 animate-pulse" />
                 ) : (
                   <button
                     onClick={() => onNavigate?.('ROLE_SELECTION')}

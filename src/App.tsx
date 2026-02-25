@@ -190,7 +190,14 @@ const AppContent: React.FC = () => {
     try {
       await api.createSchool(newSchool);
       setSchools(prev => [...prev, newSchool]);
-      setAppState(prev => ({ ...prev, userRole: 'ADMIN', schoolName: newSchool.name, schoolId: newSchool.id, schoolLogo: newSchool.logoUrl }));
+      const adminUser = {
+        id: newSchool.id,
+        schoolId: newSchool.id,
+        name: 'School Administrator',
+        email: newSchool.adminEmail,
+        role: 'ADMIN' as const
+      };
+      setAppState(prev => ({ ...prev, userRole: 'ADMIN', schoolName: newSchool.name, schoolId: newSchool.id, schoolLogo: newSchool.logoUrl, currentUser: adminUser }));
       navigate('/dashboard');
       noticeService.success(`School created! Invite Code: ${uniqueCode} — Share this with teachers and students.`, 8000);
     } catch (e: any) {
@@ -817,7 +824,7 @@ const AppContent: React.FC = () => {
                     onGetStarted={() => { setAuthMode('signup'); navigate('/auth'); }}
                     onLogin={() => { setAuthMode('login'); navigate('/auth'); }}
                     onDashboard={() => navigate('/dashboard')}
-                    isLoggedIn={false}
+                    isLoggedIn={!!appState.currentUser}
                     onDevConsole={() => navigate('/developer')}
                     onNavigate={(page) => {
                       if (page === 'ABOUT') navigate('/about');
